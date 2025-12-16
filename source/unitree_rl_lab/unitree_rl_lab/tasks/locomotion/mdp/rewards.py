@@ -18,16 +18,16 @@ if TYPE_CHECKING:
 Joint penalties.
 """
 
-
+# 能量消耗惩罚
 def energy(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Penalize the energy used by the robot's joints."""
     asset: Articulation = env.scene[asset_cfg.name]
 
-    qvel = asset.data.joint_vel[:, asset_cfg.joint_ids]
-    qfrc = asset.data.applied_torque[:, asset_cfg.joint_ids]
-    return torch.sum(torch.abs(qvel) * torch.abs(qfrc), dim=-1)
+    qvel = asset.data.joint_vel[:, asset_cfg.joint_ids] # 关节速度
+    qfrc = asset.data.applied_torque[:, asset_cfg.joint_ids] # 关节力矩
+    return torch.sum(torch.abs(qvel) * torch.abs(qfrc), dim=-1) # 计算关节能量消耗，惩罚消耗过多能量
 
-
+# 静止站立惩罚，没有移动命令时应该保持默认站立姿态
 def stand_still(
     env: ManagerBasedRLEnv, command_name: str = "base_velocity", asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
@@ -42,7 +42,7 @@ def stand_still(
 Robot.
 """
 
-
+# 姿态对齐奖励，计算实际重力方向和期望重力方向的余弦相似度
 def orientation_l2(
     env: ManagerBasedRLEnv, desired_gravity: list[float], asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
@@ -55,7 +55,7 @@ def orientation_l2(
     normalized = 0.5 * cos_dist + 0.5  # map from [-1, 1] to [0, 1]
     return torch.square(normalized)
 
-
+# 保持直立惩罚，惩罚机器人在z轴上的线速度
 def upward(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Penalize z-axis base linear velocity using L2 squared kernel."""
     # extract the used quantities (to enable type-hinting)
@@ -63,7 +63,7 @@ def upward(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("r
     reward = torch.square(1 - asset.data.projected_gravity_b[:, 2])
     return reward
 
-
+# 惩罚机器人在静止时
 def joint_position_penalty(
     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, stand_still_scale: float, velocity_threshold: float
 ) -> torch.Tensor:
@@ -80,7 +80,7 @@ def joint_position_penalty(
 Feet rewards.
 """
 
-
+# 水平力大于4 x 垂直力时，说明撞倒垂直障碍物，惩罚
 def feet_stumble(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     # extract the used quantities (to enable type-hinting)
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
@@ -90,7 +90,7 @@ def feet_stumble(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -> torch.Te
     reward = torch.any(forces_xy > 4 * forces_z, dim=1).float()
     return reward
 
-
+# 惩罚脚的抬腿高度误差，希望抬腿高度和真实高度一致
 def feet_height_body(
     env: ManagerBasedRLEnv,
     command_name: str,
@@ -116,7 +116,7 @@ def feet_height_body(
     reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b[:, 2], 0, 0.7) / 0.7
     return reward
 
-
+# 鼓励抬腿，将抬腿高度直接作为奖励
 def foot_clearance_reward(
     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, target_height: float, std: float, tanh_mult: float
 ) -> torch.Tensor:
@@ -127,7 +127,7 @@ def foot_clearance_reward(
     reward = foot_z_target_error * foot_velocity_tanh
     return torch.exp(-torch.sum(reward, dim=1) / std)
 
-
+# 惩罚两只脚靠的太近，可能导致碰撞
 def feet_too_near(
     env: ManagerBasedRLEnv, threshold: float = 0.2, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
