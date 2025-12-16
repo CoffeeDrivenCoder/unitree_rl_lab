@@ -7,7 +7,7 @@
 
 """Launch Isaac Sim Simulator first."""
 
-
+# 依赖库导入
 import gymnasium as gym
 import pathlib
 import sys
@@ -17,6 +17,7 @@ from list_envs import import_packages  # noqa: F401
 
 sys.path.pop(0)
 
+# 任务筛选，防止和isaaclab自带任务冲突
 tasks = []
 for task_spec in gym.registry.values():
     if "Unitree" in task_spec.id and "Isaac" not in task_spec.id:
@@ -31,11 +32,15 @@ from isaaclab.app import AppLauncher
 # local imports
 import cli_args  # isort: skip
 
-# add argparse arguments
+# argparse参数解析
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
+
+# 添加视频导出相关参数，包括是否录制，录制时间以及录制间隔steps
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument("--video_interval", type=int, default=2000, help="Interval between video recordings (in steps).")
+
+# 并行环境数量、任务名、随机种子、最大训练迭代次数、使用多GPU分布式训练
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, choices=tasks, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
@@ -43,9 +48,8 @@ parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy 
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
-# append RSL-RL cli arguments
+# 添加RSL-RL相关参数以及isaacsim相关参数
 cli_args.add_rsl_rl_args(parser)
-# append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 argcomplete.autocomplete(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -54,14 +58,14 @@ args_cli, hydra_args = parser.parse_known_args()
 if args_cli.video:
     args_cli.enable_cameras = True
 
-# clear out sys.argv for Hydra
+# 解析参数，分离 Hydra 参数
 sys.argv = [sys.argv[0]] + hydra_args
 
-# launch omniverse app
+# 启动 Isaac Sim 仿真器
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
-"""Check for minimum supported RSL-RL version."""
+"""RSL_RL 版本检查"""
 
 import importlib.metadata as metadata
 import platform
@@ -83,7 +87,7 @@ if args_cli.distributed and version.parse(installed_version) < version.parse(RSL
     )
     exit(1)
 
-"""Rest everything follows."""
+""" 深度学习相关依赖导入和配置 """
 
 import gymnasium as gym
 import inspect
@@ -116,11 +120,11 @@ torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 
-
+# 加载任务名和智能体配置，并进行训练
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
     """Train with RSL-RL agent."""
-    # override configurations with non-hydra CLI arguments
+    # 更新cli相关参数
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
@@ -132,7 +136,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
-    # multi-gpu training configuration
+    # 多GPU 训练配置
     if args_cli.distributed:
         env_cfg.sim.device = f"cuda:{app_launcher.local_rank}"
         agent_cfg.device = f"cuda:{app_launcher.local_rank}"
@@ -142,11 +146,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.seed = seed
         agent_cfg.seed = seed
 
-    # specify directory for logging experiments
+    """日志信息设置"""
+    # 日志根目录
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
-    # specify directory for logging runs: {time-stamp}_{run_name}
+
+    # 日志子目录
     log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     # This way, the Ray Tune workflow can extract experiment name.
     print(f"Exact experiment name requested from command line: {log_dir}")
@@ -154,18 +160,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         log_dir += f"_{agent_cfg.run_name}"
     log_dir = os.path.join(log_root_path, log_dir)
 
-    # create isaac environment
+    # 创造gym环境
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
-    # convert to single-agent instance if required by the RL algorithm
+    # 检测环境是否为多智能体环境，不是的话就转换为单智能体环境
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
-    # save resume path before creating a new log_dir
+    # 如果要求继续训练或进行知识蒸馏，获取到检查点路径并加载
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
-    # wrap for video recording
+    # 视频录制参数设置
     if args_cli.video:
         video_kwargs = {
             "video_folder": os.path.join(log_dir, "videos", "train"),
@@ -177,20 +183,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
-    # wrap around environment for rsl-rl
+    """模型训练"""
+    # rsl-rl 环境封装
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-    # create runner from rsl-rl
+    # 创建 rsl-rl 训练器
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
-    # write git state to logs
+    # 记录git状态
     runner.add_git_repo_to_log(__file__)
-    # load the checkpoint
+    # 加载检查点
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
         runner.load(resume_path)
 
-    # dump the configuration into log-directory
+    # 保存训练配置到 YAML 文件
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
     export_deploy_cfg(env.unwrapped, log_dir)
@@ -200,7 +207,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         os.path.join(log_dir, "params", os.path.basename(inspect.getfile(env_cfg.__class__))),
     )
 
-    # run training
+    # 模型训练
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
 
     # close the simulator
